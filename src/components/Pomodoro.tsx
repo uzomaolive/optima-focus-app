@@ -1,11 +1,24 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Play, Pause, SkipForward, Settings as SettingsIcon, CheckCircle, Trash2, Plus, X, RotateCcw, Clock, BarChart2, Calendar, Edit2 } from 'lucide-react';
+import { Play, Pause, SkipForward, Settings as SettingsIcon, CheckCircle, Trash2, Plus, X, RotateCcw, Clock, BarChart2, Calendar, Edit2, Layout } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 type Mode = 'focus' | 'short' | 'long';
 type RepeatType = 'none' | 'daily' | 'weekly' | 'specific';
+
+interface TemplateTask {
+  title: string;
+  estPomos: number;
+  project: string;
+  priority: 'low' | 'medium' | 'high';
+}
+
+interface TaskTemplate {
+  id: string;
+  name: string;
+  tasks: TemplateTask[];
+}
 
 interface Task {
   id: string;
@@ -80,18 +93,28 @@ const initializeHistory = (): DailyHistory[] => {
   }
 };
 
+const initializeTemplates = (): TaskTemplate[] => {
+  if (typeof window === 'undefined') return [];
+  try {
+    const saved = localStorage.getItem('optima-task-templates');
+    return saved ? JSON.parse(saved) : [];
+  } catch (e) {
+    console.error('Failed to load templates:', e);
+    return [];
+  }
+};
+
 export default function Pomodoro() {
-  const [mode, setMode] = useState<Mode>('focus');
-  const [settings, setSettings] = useState(() => initializeSettings());
-  const [timeLeft, setTimeLeft] = useState(() => initializeSettings().focus * 60);
+  const [timeLeft, setTimeLeft] = useState(25 * 60);
   const [isActive, setIsActive] = useState(false);
+  const [mode, setMode] = useState<Mode>('focus');
   const [tasks, setTasks] = useState<Task[]>(() => initializeTasks());
-  const [newTaskTitle, setNewTaskTitle] = useState('');
-  const [estPomos, setEstPomos] = useState(1);
-  const [isAdding, setIsAdding] = useState(false);
+  const [templates, setTemplates] = useState<TaskTemplate[]>(() => initializeTemplates());
+  const [isTemplatesOpen, setIsTemplatesOpen] = useState(false);
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+  const [settings, setSettings] = useState(() => initializeSettings());
   
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState('');
@@ -102,6 +125,9 @@ export default function Pomodoro() {
   const [editRepeatType, setEditRepeatType] = useState<RepeatType>('none');
   const [editRepeatDays, setEditRepeatDays] = useState<number[]>([]);
 
+  const [isAdding, setIsAdding] = useState(false);
+  const [newTaskTitle, setNewTaskTitle] = useState('');
+  const [estPomos, setEstPomos] = useState(1);
   const [newScheduledDate, setNewScheduledDate] = useState('');
   const [newScheduledTime, setNewScheduledTime] = useState('');
   const [newRepeatEnabled, setNewRepeatEnabled] = useState(false);
@@ -325,6 +351,26 @@ export default function Pomodoro() {
       }
     }
     setTasks(tasks.map(t => t.id === id ? updatedTask : t));
+  };
+
+  const applyTemplate = (template: TaskTemplate) => {
+    const today = new Date().toISOString().split('T')[0];
+    
+    const newTasks: Task[] = template.tasks.map((t, idx) => ({
+      id: `${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 5)}`,
+      title: t.title,
+      estPomos: t.estPomos,
+      actPomos: 0,
+      completed: false,
+      scheduledDate: today,
+      scheduledTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }),
+      project: t.project,
+      priority: t.priority,
+    }));
+
+    setTasks(prev => [...prev, ...newTasks]);
+    setIsTemplatesOpen(false);
+    if (!activeTaskId && newTasks.length > 0) setActiveTaskId(newTasks[0].id);
   };
 
   const saveTaskEdit = (e: React.FormEvent) => {
@@ -732,21 +778,32 @@ export default function Pomodoro() {
               ))}
             </AnimatePresence>
 
-            {!isAdding ? (
-              <button
-                onClick={() => setIsAdding(true)}
-                className="w-full py-5 rounded-3xl border-2 border-solid border-indigo-500 dark:border-zinc-700 flex items-center justify-center gap-2 font-bold text-indigo-600 dark:text-zinc-300 hover:text-indigo-700 dark:hover:text-zinc-200 hover:bg-[var(--surface-secondary)]/50 transition-all"
-              >
-                <Plus className="w-5 h-5" /> Add Task
-              </button>
-            ) : (
-              <motion.form 
-                layout
-                initial={{ opacity: 0, scale: 0.98 }}
-                animate={{ opacity: 1, scale: 1 }}
-                onSubmit={addTask} 
-                className="bg-[var(--surface)] rounded-3xl p-6 border border-[var(--border)] shadow-xl"
-              >
+            <div className="flex gap-3">
+              {!isAdding ? (
+                <>
+                  <button
+                    onClick={() => setIsAdding(true)}
+                    className="flex-1 py-5 rounded-3xl border-2 border-solid border-indigo-500 dark:border-zinc-700 flex items-center justify-center gap-2 font-bold text-indigo-600 dark:text-zinc-300 hover:text-indigo-700 dark:hover:text-zinc-200 hover:bg-[var(--surface-secondary)]/50 transition-all"
+                  >
+                    <Plus className="w-5 h-5" /> Add Task
+                  </button>
+                  {templates.length > 0 && (
+                    <button
+                      onClick={() => setIsTemplatesOpen(true)}
+                      className="px-6 py-5 rounded-3xl border-2 border-dashed border-[var(--border)] flex items-center justify-center gap-2 font-bold text-[var(--foreground)] opacity-70 hover:opacity-100 hover:bg-[var(--surface-secondary)]/50 transition-all"
+                    >
+                      <Layout className="w-5 h-5" /> Templates
+                    </button>
+                  )}
+                </>
+              ) : (
+                <motion.form 
+                  layout
+                  initial={{ opacity: 0, scale: 0.98 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  onSubmit={addTask} 
+                  className="w-full bg-[var(--surface)] rounded-3xl p-6 border border-[var(--border)] shadow-xl"
+                >
                 <input
                   autoFocus
                   type="text"
@@ -862,6 +919,7 @@ export default function Pomodoro() {
                 </div>
               </motion.form>
             )}
+            </div>
           </div>
         </section>
       </>
@@ -1040,6 +1098,35 @@ export default function Pomodoro() {
           </div>
         )}
       </AnimatePresence>
+
+      {/* Templates Modal */}
+      <AnimatePresence>
+        {isTemplatesOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-6">
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setIsTemplatesOpen(false)} className="absolute inset-0 bg-black/40 backdrop-blur-md" />
+            <motion.div initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.95, opacity: 0 }} className="relative w-full max-w-sm bg-[var(--surface)] rounded-[2rem] p-8 shadow-2xl border border-[var(--border)]">
+              <div className="flex justify-between items-center mb-8">
+                <h3 className="text-lg font-black uppercase tracking-widest text-[var(--foreground)] opacity-70">Templates</h3>
+                <button onClick={() => setIsTemplatesOpen(false)}><X className="w-5 h-5" /></button>
+              </div>
+
+              <div className="space-y-3 max-h-96 overflow-y-auto pr-2">
+                {templates.map(template => (
+                  <button
+                    key={template.id}
+                    onClick={() => applyTemplate(template)}
+                    className="w-full p-4 rounded-2xl bg-[var(--surface-secondary)] border border-[var(--border)] hover:border-[var(--accent)] transition-all text-left group"
+                  >
+                    <div className="text-sm font-bold text-[var(--foreground)] mb-1">{template.name}</div>
+                    <div className="text-[10px] text-[var(--foreground)] opacity-50">{template.tasks.length} tasks</div>
+                  </button>
+                ))}
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
       {/* History Modal */}
       <AnimatePresence>
         {isHistoryOpen && (

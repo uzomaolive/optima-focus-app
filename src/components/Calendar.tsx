@@ -1,10 +1,23 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { ChevronLeft, ChevronRight, CheckCircle, Circle, Trash2, Plus, X, Calendar as CalendarIcon, Clock, Flag } from 'lucide-react';
+import { ChevronLeft, ChevronRight, CheckCircle, Circle, Trash2, Plus, X, Calendar as CalendarIcon, Clock, Flag, Copy, Layout } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 type RepeatType = 'none' | 'daily' | 'weekly' | 'specific';
+
+interface TemplateTask {
+  title: string;
+  estPomos: number;
+  project: string;
+  priority: 'low' | 'medium' | 'high';
+}
+
+interface TaskTemplate {
+  id: string;
+  name: string;
+  tasks: TemplateTask[];
+}
 
 interface Task {
   id: string;
@@ -69,8 +82,22 @@ const initializeProjectGoals = (): Record<string, number> => {
   }
 };
 
+const initializeTemplates = (): TaskTemplate[] => {
+  if (typeof window === 'undefined') return [];
+  try {
+    const saved = localStorage.getItem('optima-task-templates');
+    return saved ? JSON.parse(saved) : [];
+  } catch (e) {
+    console.error('Failed to load templates:', e);
+    return [];
+  }
+};
+
 export default function Calendar() {
   const [tasks, setTasks] = useState<Task[]>(() => initializeTasks());
+  const [templates, setTemplates] = useState<TaskTemplate[]>(() => initializeTemplates());
+  const [isSavingTemplate, setIsSavingTemplate] = useState(false);
+  const [newTemplateName, setNewTemplateName] = useState('');
   const [projectGoals, setProjectGoals] = useState<Record<string, number>>(() => initializeProjectGoals());
   const [goalInputs, setGoalInputs] = useState<Record<string, string>>({});
   const [currentDate, setCurrentDate] = useState(new Date());
@@ -113,6 +140,14 @@ export default function Calendar() {
       console.error('Failed to save project goals:', e);
     }
   }, [projectGoals]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('optima-task-templates', JSON.stringify(templates));
+    } catch (e) {
+      console.error('Failed to save templates:', e);
+    }
+  }, [templates]);
 
   const getDaysInMonth = (date: Date) => new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
   const getFirstDayOfMonth = (date: Date) => new Date(date.getFullYear(), date.getMonth(), 1).getDay();
@@ -203,6 +238,49 @@ export default function Calendar() {
     }
 
     setProjectGoals(prev => ({ ...prev, [projectKey]: parsed }));
+  };
+
+  const saveAsTemplate = () => {
+    if (!newTemplateName.trim() || !selectedDate) return;
+    const dateTasks = getTasksForDate(selectedDate);
+    if (dateTasks.length === 0) return;
+
+    const newTemplate: TaskTemplate = {
+      id: Date.now().toString(),
+      name: newTemplateName,
+      tasks: dateTasks.map(t => ({
+        title: t.title,
+        estPomos: t.estPomos,
+        project: t.project || 'personal',
+        priority: t.priority || 'medium',
+      })),
+    };
+
+    setTemplates(prev => [...prev, newTemplate]);
+    setNewTemplateName('');
+    setIsSavingTemplate(false);
+  };
+
+  const applyTemplate = (template: TaskTemplate) => {
+    if (!selectedDate) return;
+    
+    const newTasks: Task[] = template.tasks.map((t, idx) => ({
+      id: `${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 5)}`,
+      title: t.title,
+      estPomos: t.estPomos,
+      actPomos: 0,
+      completed: false,
+      scheduledDate: selectedDate,
+      scheduledTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }),
+      project: t.project,
+      priority: t.priority,
+    }));
+
+    setTasks(prev => [...prev, ...newTasks]);
+  };
+
+  const deleteTemplate = (id: string) => {
+    setTemplates(prev => prev.filter(t => t.id !== id));
   };
 
   const toggleTaskComplete = (taskId: string) => {
@@ -395,7 +473,7 @@ export default function Calendar() {
         <div className="p-6 border-b border-[var(--border)]">
           <h2 className="text-lg font-bold text-[var(--foreground)]">Projects</h2>
         </div>
-        <div className="flex-1 overflow-y-auto p-4 space-y-1">
+        <div className="flex-[2] overflow-y-auto p-4 space-y-3">
           {Object.entries(PRESET_PROJECTS).map(([key, project]) => {
             const count = tasks.filter(t => (t.project || 'personal') === key && !t.completed).length;
             const goal = projectGoals[key] || 0;
@@ -443,6 +521,36 @@ export default function Calendar() {
             );
           })}
         </div>
+
+        <div className="p-6 border-t border-b border-[var(--border)]">
+          <h2 className="text-lg font-bold text-[var(--foreground)] flex items-center gap-2">
+            <Layout size={20} /> Templates
+          </h2>
+        </div>
+        <div className="flex-1 overflow-y-auto p-4 space-y-2">
+          {templates.length === 0 && (
+            <p className="text-xs text-[var(--foreground)] opacity-50 px-4">No templates yet</p>
+          )}
+          {templates.map(template => (
+            <div key={template.id} className="group relative">
+              <button
+                onClick={() => applyTemplate(template)}
+                className="w-full flex items-center gap-3 px-4 py-2 rounded-lg bg-[var(--surface-secondary)] border border-[var(--border)] hover:border-[var(--accent)] transition text-left"
+              >
+                <div className="flex-1">
+                  <div className="text-sm font-bold text-[var(--foreground)]">{template.name}</div>
+                  <div className="text-[10px] text-[var(--foreground)] opacity-60">{template.tasks.length} tasks</div>
+                </div>
+              </button>
+              <button
+                onClick={(e) => { e.stopPropagation(); deleteTemplate(template.id); }}
+                className="absolute top-1 right-1 p-1 text-[var(--foreground)] opacity-0 group-hover:opacity-40 hover:!opacity-100 transition"
+              >
+                <Trash2 size={12} />
+              </button>
+            </div>
+          ))}
+        </div>
       </div>
 
       {/* Main Content */}
@@ -483,11 +591,58 @@ export default function Calendar() {
 
           {/* Right Sidebar - Task Details */}
           <div className="w-96 bg-[var(--surface)] border-l border-[var(--border)] flex flex-col transition-colors duration-300">
-            <div className="border-b border-[var(--border)] p-6">
+            <div className="border-b border-[var(--border)] p-6 flex items-center justify-between">
               <h3 className="text-lg font-bold text-[var(--foreground)]">
                 {selectedDate && new Date(selectedDate).toLocaleDateString('default', { weekday: 'long', month: 'long', day: 'numeric' })}
               </h3>
+              {selectedDateTasks.length > 0 && (
+                <button 
+                  onClick={() => setIsSavingTemplate(true)}
+                  className="p-2 rounded-lg hover:bg-[var(--surface-secondary)] text-[var(--foreground)] transition"
+                  title="Save day as template"
+                >
+                  <Copy size={20} />
+                </button>
+              )}
             </div>
+
+            <AnimatePresence>
+              {isSavingTemplate && (
+                <motion.div 
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: 'auto', opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  className="px-6 py-4 border-b border-[var(--border)] bg-[var(--surface-secondary)] overflow-hidden"
+                >
+                  <div className="flex flex-col gap-2">
+                    <label className="text-xs font-bold uppercase text-[var(--foreground)] opacity-70">Template Name</label>
+                    <div className="flex gap-2">
+                      <input
+                        autoFocus
+                        type="text"
+                        value={newTemplateName}
+                        onChange={e => setNewTemplateName(e.target.value)}
+                        onKeyDown={e => e.key === 'Enter' && saveAsTemplate()}
+                        placeholder="e.g. Morning Routine"
+                        className="flex-1 px-3 py-2 border border-[var(--border)] rounded-lg text-sm bg-[var(--surface)] text-[var(--foreground)] focus:outline-none focus:border-[var(--accent)]"
+                      />
+                      <button
+                        onClick={saveAsTemplate}
+                        className="px-4 py-2 bg-[var(--foreground)] text-[var(--surface)] rounded-lg text-sm font-bold"
+                      >
+                        Save
+                      </button>
+                      <button
+                        onClick={() => setIsSavingTemplate(false)}
+                        className="p-2 text-[var(--foreground)] opacity-70 hover:opacity-100"
+                      >
+                        <X size={20} />
+                      </button>
+                    </div>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
 
             <div className="flex-1 overflow-y-auto p-6 space-y-3">
               <AnimatePresence>
