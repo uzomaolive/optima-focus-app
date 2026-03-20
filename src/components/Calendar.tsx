@@ -43,8 +43,21 @@ const initializeTasks = (): Task[] => {
   }
 };
 
+const initializeProjectGoals = (): Record<string, number> => {
+  if (typeof window === 'undefined') return {};
+  try {
+    const saved = localStorage.getItem('optima-project-goals');
+    return saved ? JSON.parse(saved) : {};
+  } catch (e) {
+    console.error('Failed to load project goals:', e);
+    return {};
+  }
+};
+
 export default function Calendar() {
   const [tasks, setTasks] = useState<Task[]>(() => initializeTasks());
+  const [projectGoals, setProjectGoals] = useState<Record<string, number>>(() => initializeProjectGoals());
+  const [goalInputs, setGoalInputs] = useState<Record<string, string>>({});
   const [currentDate, setCurrentDate] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
@@ -72,6 +85,14 @@ export default function Calendar() {
     }
   }, [tasks]);
 
+  useEffect(() => {
+    try {
+      localStorage.setItem('optima-project-goals', JSON.stringify(projectGoals));
+    } catch (e) {
+      console.error('Failed to save project goals:', e);
+    }
+  }, [projectGoals]);
+
   const getDaysInMonth = (date: Date) => new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
   const getFirstDayOfMonth = (date: Date) => new Date(date.getFullYear(), date.getMonth(), 1).getDay();
   const formatDate = (date: Date) => date.toISOString().split('T')[0];
@@ -81,6 +102,33 @@ export default function Calendar() {
   const getProjectsInUse = () => {
     const projects = new Set(tasks.map(t => t.project || 'personal'));
     return Array.from(projects);
+  };
+
+  const getProjectCompletedPomos = (projectKey: string) => {
+    return tasks
+      .filter(t => (t.project || 'personal') === projectKey && t.completed)
+      .reduce((total, task) => total + (task.actPomos > 0 ? task.actPomos : task.estPomos), 0);
+  };
+
+  const setProjectGoal = (projectKey: string) => {
+    const rawValue = (goalInputs[projectKey] ?? '').trim();
+    const parsed = parseInt(rawValue, 10);
+
+    if (Number.isNaN(parsed) || parsed <= 0) {
+      setProjectGoals(prev => {
+        const next = { ...prev };
+        delete next[projectKey];
+        return next;
+      });
+      setGoalInputs(prev => {
+        const next = { ...prev };
+        delete next[projectKey];
+        return next;
+      });
+      return;
+    }
+
+    setProjectGoals(prev => ({ ...prev, [projectKey]: parsed }));
   };
 
   const toggleTaskComplete = (taskId: string) => {
@@ -225,11 +273,47 @@ export default function Calendar() {
         <div className="flex-1 overflow-y-auto p-4 space-y-1">
           {Object.entries(PRESET_PROJECTS).map(([key, project]) => {
             const count = tasks.filter(t => (t.project || 'personal') === key && !t.completed).length;
+            const goal = projectGoals[key] || 0;
+            const completedPomos = getProjectCompletedPomos(key);
+            const progress = goal > 0 ? Math.min(100, (completedPomos / goal) * 100) : 0;
             return (
-              <div key={key} className="flex items-center gap-3 px-4 py-2 rounded hover:bg-[var(--surface-secondary)] dark:hover:bg-[var(--surface-secondary)] cursor-pointer transition">
-                <div className="w-3 h-3 rounded-full" style={{ backgroundColor: project.color }} />
-                <span className="flex-1 text-sm text-[var(--foreground)]">{project.name}</span>
-                <span className="text-xs text-[var(--foreground)] opacity-70">{count}</span>
+              <div key={key} className="px-3 py-3 rounded-lg bg-[var(--surface-secondary)] border border-[var(--border)]">
+                <div className="flex items-center gap-3">
+                  <div className="w-3 h-3 rounded-full" style={{ backgroundColor: project.color }} />
+                  <span className="flex-1 text-sm text-[var(--foreground)]">{project.name}</span>
+                  <span className="text-xs text-[var(--foreground)] opacity-70">{count}</span>
+                </div>
+
+                <div className="mt-2">
+                  <div className="w-full h-2 rounded-full bg-[var(--border)] overflow-hidden">
+                    <div
+                      className="h-full rounded-full transition-all duration-300"
+                      style={{ width: `${progress}%`, backgroundColor: project.color }}
+                    />
+                  </div>
+                  <div className="mt-1 flex items-center justify-between text-xs text-[var(--foreground)] opacity-70">
+                    <span>{goal > 0 ? `${completedPomos}/${goal} pomos` : 'No goal set'}</span>
+                    {goal > 0 && <span>{Math.round(progress)}%</span>}
+                  </div>
+                </div>
+
+                <div className="mt-2 flex items-center gap-2">
+                  <input
+                    type="number"
+                    min="1"
+                    placeholder="Goal"
+                    value={goalInputs[key] ?? (goal > 0 ? String(goal) : '')}
+                    onChange={e => setGoalInputs(prev => ({ ...prev, [key]: e.target.value }))}
+                    onKeyDown={e => e.key === 'Enter' && setProjectGoal(key)}
+                    className="w-full px-2 py-1 text-xs border border-[var(--border)] rounded bg-[var(--surface)] text-[var(--foreground)] focus:outline-none focus:border-[var(--accent)]"
+                  />
+                  <button
+                    onClick={() => setProjectGoal(key)}
+                    className="px-2 py-1 text-xs rounded bg-[var(--foreground)] text-[var(--surface)] hover:opacity-90 transition"
+                  >
+                    Set
+                  </button>
+                </div>
               </div>
             );
           })}
