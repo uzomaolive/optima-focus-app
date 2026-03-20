@@ -5,6 +5,7 @@ import { Play, Pause, SkipForward, Settings as SettingsIcon, CheckCircle, Trash2
 import { motion, AnimatePresence } from 'framer-motion';
 
 type Mode = 'focus' | 'short' | 'long';
+type RepeatType = 'none' | 'daily' | 'weekly' | 'specific';
 
 interface Task {
   id: string;
@@ -19,6 +20,9 @@ interface Task {
   reminderSent?: boolean;
   project?: string;
   priority?: 'low' | 'medium' | 'high';
+  repeatEnabled?: boolean;
+  repeatType?: RepeatType;
+  repeatDays?: number[];
 }
 
 interface DailyHistory {
@@ -32,6 +36,16 @@ const MODES: Record<Mode, { color: string; label: string; bg: string }> = {
   short: { color: '#10b981', label: 'Short Break', bg: '#fff' },
   long: { color: '#3b82f6', label: 'Long Break', bg: '#fff' },
 };
+
+const WEEKDAY_OPTIONS = [
+  { label: 'Sun', value: 0 },
+  { label: 'Mon', value: 1 },
+  { label: 'Tue', value: 2 },
+  { label: 'Wed', value: 3 },
+  { label: 'Thu', value: 4 },
+  { label: 'Fri', value: 5 },
+  { label: 'Sat', value: 6 },
+];
 
 const initializeTasks = (): Task[] => {
   if (typeof window === 'undefined') return [];
@@ -84,9 +98,15 @@ export default function Pomodoro() {
   const [editEstPomos, setEditEstPomos] = useState(1);
   const [editScheduledDate, setEditScheduledDate] = useState('');
   const [editScheduledTime, setEditScheduledTime] = useState('');
+  const [editRepeatEnabled, setEditRepeatEnabled] = useState(false);
+  const [editRepeatType, setEditRepeatType] = useState<RepeatType>('none');
+  const [editRepeatDays, setEditRepeatDays] = useState<number[]>([]);
 
   const [newScheduledDate, setNewScheduledDate] = useState('');
   const [newScheduledTime, setNewScheduledTime] = useState('');
+  const [newRepeatEnabled, setNewRepeatEnabled] = useState(false);
+  const [newRepeatType, setNewRepeatType] = useState<RepeatType>('none');
+  const [newRepeatDays, setNewRepeatDays] = useState<number[]>([]);
   const [activeSection, setActiveSection] = useState<'focus' | 'schedule'>('focus');
   const [history, setHistory] = useState<DailyHistory[]>(() => initializeHistory());
 
@@ -181,6 +201,59 @@ export default function Pomodoro() {
     });
   };
 
+  const formatDate = (date: Date) => date.toISOString().split('T')[0];
+
+  const addDays = (dateString: string, days: number) => {
+    const date = new Date(`${dateString}T00:00:00`);
+    date.setDate(date.getDate() + days);
+    return formatDate(date);
+  };
+
+  const getNextSpecificDayDate = (dateString: string, repeatDays: number[]) => {
+    if (repeatDays.length === 0) return null;
+    const date = new Date(`${dateString}T00:00:00`);
+    for (let i = 1; i <= 7; i++) {
+      const candidate = new Date(date);
+      candidate.setDate(date.getDate() + i);
+      if (repeatDays.includes(candidate.getDay())) {
+        return formatDate(candidate);
+      }
+    }
+    return null;
+  };
+
+  const getNextRecurringDate = (task: Task) => {
+    if (!task.repeatEnabled || !task.repeatType || task.repeatType === 'none') return null;
+
+    const today = formatDate(new Date());
+    const baseDate = task.scheduledDate || today;
+
+    if (task.repeatType === 'daily') {
+      return addDays(baseDate, 1);
+    }
+
+    if (task.repeatType === 'weekly') {
+      return addDays(baseDate, 7);
+    }
+
+    if (task.repeatType === 'specific') {
+      return getNextSpecificDayDate(baseDate, task.repeatDays || []);
+    }
+
+    return null;
+  };
+
+  const getRepeatLabel = (task: Task) => {
+    if (!task.repeatEnabled || !task.repeatType || task.repeatType === 'none') return null;
+    if (task.repeatType === 'daily') return 'Daily';
+    if (task.repeatType === 'weekly') return 'Weekly';
+    const labels = WEEKDAY_OPTIONS
+      .filter(day => (task.repeatDays || []).includes(day.value))
+      .map(day => day.label)
+      .join(', ');
+    return labels ? labels : 'Specific days';
+  };
+
   const handleTaskSelect = (id: string) => {
     setActiveTaskId(id);
     setTasks(prev => prev.map(t => {
@@ -215,6 +288,41 @@ export default function Pomodoro() {
           return [...prev, { date: today, pomosCount: 0, completedTasks: [taskData] }];
         }
       });
+
+      if (task.repeatEnabled) {
+        const nextDate = getNextRecurringDate(task);
+        if (nextDate) {
+          setTasks(prev => {
+            const duplicateExists = prev.some(t =>
+              t.id !== task.id &&
+              t.title === task.title &&
+              t.scheduledDate === nextDate &&
+              t.repeatEnabled &&
+              t.repeatType === task.repeatType
+            );
+
+            if (duplicateExists) {
+              return prev.map(t => t.id === id ? updatedTask : t);
+            }
+
+            return [
+              ...prev.map(t => t.id === id ? updatedTask : t),
+              {
+                ...task,
+                id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                completed: false,
+                actPomos: 0,
+                startTime: undefined,
+                endTime: undefined,
+                scheduledDate: nextDate,
+                reminderSent: false,
+                repeatDays: task.repeatDays ? [...task.repeatDays] : [],
+              },
+            ];
+          });
+          return;
+        }
+      }
     }
     setTasks(tasks.map(t => t.id === id ? updatedTask : t));
   };
@@ -228,6 +336,9 @@ export default function Pomodoro() {
       estPomos: editEstPomos,
       scheduledDate: editScheduledDate,
       scheduledTime: editScheduledTime,
+      repeatEnabled: editRepeatEnabled,
+      repeatType: editRepeatEnabled ? editRepeatType : 'none',
+      repeatDays: editRepeatEnabled && editRepeatType === 'specific' ? editRepeatDays : [],
       reminderSent: false // Reset reminder sent status on edit
     } : t));
     setEditingTaskId(null);
@@ -239,6 +350,9 @@ export default function Pomodoro() {
     setEditEstPomos(task.estPomos);
     setEditScheduledDate(task.scheduledDate || '');
     setEditScheduledTime(task.scheduledTime || '');
+    setEditRepeatEnabled(Boolean(task.repeatEnabled));
+    setEditRepeatType(task.repeatType || 'none');
+    setEditRepeatDays(task.repeatDays || []);
   };
 
   const addTask = (e: React.FormEvent) => {
@@ -252,6 +366,9 @@ export default function Pomodoro() {
       completed: false,
       scheduledDate: newScheduledDate,
       scheduledTime: newScheduledTime,
+      repeatEnabled: newRepeatEnabled,
+      repeatType: newRepeatEnabled ? newRepeatType : 'none',
+      repeatDays: newRepeatEnabled && newRepeatType === 'specific' ? newRepeatDays : [],
       reminderSent: false
     };
     setTasks([...tasks, newTask]);
@@ -259,6 +376,9 @@ export default function Pomodoro() {
     setEstPomos(1);
     setNewScheduledDate('');
     setNewScheduledTime('');
+    setNewRepeatEnabled(false);
+    setNewRepeatType('none');
+    setNewRepeatDays([]);
     setIsAdding(false);
     if (!activeTaskId) setActiveTaskId(newTask.id);
   };
@@ -477,6 +597,63 @@ export default function Pomodoro() {
                           />
                         </div>
                       </div>
+                      <div className="rounded-xl border border-[var(--border)] p-3 bg-[var(--surface-secondary)] space-y-2">
+                        <label className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-[var(--foreground)] opacity-70">
+                          <input
+                            type="checkbox"
+                            checked={editRepeatEnabled}
+                            onChange={(e) => {
+                              setEditRepeatEnabled(e.target.checked);
+                              if (e.target.checked && editRepeatType === 'none') {
+                                setEditRepeatType('daily');
+                              }
+                            }}
+                          />
+                          Repeat
+                        </label>
+
+                        {editRepeatEnabled && (
+                          <>
+                            <select
+                              value={editRepeatType}
+                              onChange={(e) => setEditRepeatType(e.target.value as RepeatType)}
+                              className="w-full p-2.5 bg-[var(--surface)] rounded-xl font-bold text-[var(--foreground)]"
+                            >
+                              <option value="daily">Daily</option>
+                              <option value="weekly">Weekly</option>
+                              <option value="specific">Specific days</option>
+                            </select>
+
+                            {editRepeatType === 'specific' && (
+                              <div className="flex flex-wrap gap-1">
+                                {WEEKDAY_OPTIONS.map(day => {
+                                  const selected = editRepeatDays.includes(day.value);
+                                  return (
+                                    <button
+                                      key={day.value}
+                                      type="button"
+                                      onClick={() => {
+                                        setEditRepeatDays(prev =>
+                                          prev.includes(day.value)
+                                            ? prev.filter(d => d !== day.value)
+                                            : [...prev, day.value].sort((a, b) => a - b)
+                                        );
+                                      }}
+                                      className={`px-2 py-1 rounded text-xs border transition ${
+                                        selected
+                                          ? 'bg-[var(--foreground)] text-[var(--surface)] border-[var(--foreground)]'
+                                          : 'bg-[var(--surface)] text-[var(--foreground)] border-[var(--border)]'
+                                      }`}
+                                    >
+                                      {day.label}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </>
+                        )}
+                      </div>
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-4">
                           <span className="font-bold text-xs uppercase tracking-widest text-[var(--foreground)] opacity-70">Est. Pomos</span>
@@ -521,6 +698,11 @@ export default function Pomodoro() {
                               <span className="text-[10px] text-[var(--accent)] uppercase font-black tracking-widest flex items-center gap-1">
                                 <Calendar className="w-2.5 h-2.5" />
                                 {task.scheduledDate} {task.scheduledTime && `@ ${task.scheduledTime}`}
+                              </span>
+                            )}
+                            {getRepeatLabel(task) && (
+                              <span className="text-[10px] text-blue-600 dark:text-blue-300 uppercase font-black tracking-widest">
+                                Repeat: {getRepeatLabel(task)}
                               </span>
                             )}
                           </div>
@@ -595,6 +777,64 @@ export default function Pomodoro() {
                   </div>
                 </div>
 
+                <div className="rounded-xl border border-[var(--border)] p-3 bg-[var(--surface-secondary)] mb-6 space-y-2">
+                  <label className="flex items-center gap-2 text-[10px] font-black uppercase text-[var(--foreground)] opacity-70 tracking-widest">
+                    <input
+                      type="checkbox"
+                      checked={newRepeatEnabled}
+                      onChange={(e) => {
+                        setNewRepeatEnabled(e.target.checked);
+                        if (e.target.checked && newRepeatType === 'none') {
+                          setNewRepeatType('daily');
+                        }
+                      }}
+                    />
+                    Repeat
+                  </label>
+
+                  {newRepeatEnabled && (
+                    <>
+                      <select
+                        value={newRepeatType}
+                        onChange={(e) => setNewRepeatType(e.target.value as RepeatType)}
+                        className="w-full p-3 bg-[var(--surface)] rounded-xl font-bold text-[var(--foreground)]"
+                      >
+                        <option value="daily">Daily</option>
+                        <option value="weekly">Weekly</option>
+                        <option value="specific">Specific days</option>
+                      </select>
+
+                      {newRepeatType === 'specific' && (
+                        <div className="flex flex-wrap gap-1">
+                          {WEEKDAY_OPTIONS.map(day => {
+                            const selected = newRepeatDays.includes(day.value);
+                            return (
+                              <button
+                                key={day.value}
+                                type="button"
+                                onClick={() => {
+                                  setNewRepeatDays(prev =>
+                                    prev.includes(day.value)
+                                      ? prev.filter(d => d !== day.value)
+                                      : [...prev, day.value].sort((a, b) => a - b)
+                                  );
+                                }}
+                                className={`px-2 py-1 rounded text-xs border transition ${
+                                  selected
+                                    ? 'bg-[var(--foreground)] text-[var(--surface)] border-[var(--foreground)]'
+                                    : 'bg-[var(--surface)] text-[var(--foreground)] border-[var(--border)]'
+                                }`}
+                              >
+                                {day.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+
                 <div className="flex items-center gap-4 mb-6">
                   <span className="font-bold text-xs uppercase tracking-widest text-[var(--foreground)] opacity-70">Est. Pomos</span>
                   <input
@@ -606,7 +846,18 @@ export default function Pomodoro() {
                   />
                 </div>
                 <div className="flex justify-end gap-3">
-                  <button type="button" onClick={() => setIsAdding(false)} className="px-6 py-2.5 font-bold text-[var(--foreground)] opacity-70">Cancel</button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsAdding(false);
+                      setNewRepeatEnabled(false);
+                      setNewRepeatType('none');
+                      setNewRepeatDays([]);
+                    }}
+                    className="px-6 py-2.5 font-bold text-[var(--foreground)] opacity-70"
+                  >
+                    Cancel
+                  </button>
                   <button type="submit" className="px-8 py-2.5 bg-[var(--foreground)] text-[var(--surface)] rounded-xl font-bold">Save</button>
                 </div>
               </motion.form>

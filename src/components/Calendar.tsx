@@ -4,6 +4,8 @@ import React, { useState, useEffect } from 'react';
 import { ChevronLeft, ChevronRight, CheckCircle, Circle, Trash2, Plus, X, Calendar as CalendarIcon, Clock, Flag } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
+type RepeatType = 'none' | 'daily' | 'weekly' | 'specific';
+
 interface Task {
   id: string;
   title: string;
@@ -17,6 +19,9 @@ interface Task {
   reminderSent?: boolean;
   project?: string;
   priority?: 'low' | 'medium' | 'high';
+  repeatEnabled?: boolean;
+  repeatType?: RepeatType;
+  repeatDays?: number[];
 }
 
 interface ProjectMetadata {
@@ -31,6 +36,16 @@ const PRESET_PROJECTS: Record<string, ProjectMetadata> = {
   'health': { name: 'Health', color: '#10b981' },
   'errands': { name: 'Errands', color: '#f59e0b' },
 };
+
+const WEEKDAY_OPTIONS = [
+  { label: 'Sun', value: 0 },
+  { label: 'Mon', value: 1 },
+  { label: 'Tue', value: 2 },
+  { label: 'Wed', value: 3 },
+  { label: 'Thu', value: 4 },
+  { label: 'Fri', value: 5 },
+  { label: 'Sat', value: 6 },
+];
 
 const initializeTasks = (): Task[] => {
   if (typeof window === 'undefined') return [];
@@ -67,9 +82,15 @@ export default function Calendar() {
   const [editScheduledTime, setEditScheduledTime] = useState('');
   const [editProject, setEditProject] = useState('personal');
   const [editPriority, setEditPriority] = useState<'low' | 'medium' | 'high'>('medium');
+  const [editRepeatEnabled, setEditRepeatEnabled] = useState(false);
+  const [editRepeatType, setEditRepeatType] = useState<RepeatType>('none');
+  const [editRepeatDays, setEditRepeatDays] = useState<number[]>([]);
   const [showAddTask, setShowAddTask] = useState(false);
   const [newTaskTitle, setNewTaskTitle] = useState('');
   const [newTaskProject, setNewTaskProject] = useState('personal');
+  const [newRepeatEnabled, setNewRepeatEnabled] = useState(false);
+  const [newRepeatType, setNewRepeatType] = useState<RepeatType>('none');
+  const [newRepeatDays, setNewRepeatDays] = useState<number[]>([]);
 
   // Set selected date to today
   useEffect(() => {
@@ -97,6 +118,59 @@ export default function Calendar() {
   const getFirstDayOfMonth = (date: Date) => new Date(date.getFullYear(), date.getMonth(), 1).getDay();
   const formatDate = (date: Date) => date.toISOString().split('T')[0];
   const today = formatDate(new Date());
+
+  const addDays = (dateString: string, days: number) => {
+    const date = new Date(`${dateString}T00:00:00`);
+    date.setDate(date.getDate() + days);
+    return formatDate(date);
+  };
+
+  const getNextSpecificDayDate = (dateString: string, repeatDays: number[]) => {
+    if (repeatDays.length === 0) return null;
+    const date = new Date(`${dateString}T00:00:00`);
+    for (let i = 1; i <= 7; i++) {
+      const candidate = new Date(date);
+      candidate.setDate(date.getDate() + i);
+      if (repeatDays.includes(candidate.getDay())) {
+        return formatDate(candidate);
+      }
+    }
+    return null;
+  };
+
+  const getNextRecurringDate = (task: Task) => {
+    if (!task.repeatEnabled || !task.repeatType || task.repeatType === 'none') return null;
+
+    const baseDate = task.scheduledDate || today;
+
+    if (task.repeatType === 'daily') {
+      return addDays(baseDate, 1);
+    }
+
+    if (task.repeatType === 'weekly') {
+      return addDays(baseDate, 7);
+    }
+
+    if (task.repeatType === 'specific') {
+      return getNextSpecificDayDate(baseDate, task.repeatDays || []);
+    }
+
+    return null;
+  };
+
+  const getRepeatLabel = (task: Task) => {
+    if (!task.repeatEnabled || !task.repeatType || task.repeatType === 'none') return null;
+    if (task.repeatType === 'daily') return 'Repeats daily';
+    if (task.repeatType === 'weekly') return 'Repeats weekly';
+    if (task.repeatType === 'specific') {
+      const labels = WEEKDAY_OPTIONS
+        .filter(day => (task.repeatDays || []).includes(day.value))
+        .map(day => day.label)
+        .join(', ');
+      return labels ? `Repeats: ${labels}` : 'Repeats on specific days';
+    }
+    return null;
+  };
 
   const getTasksForDate = (dateStr: string) => tasks.filter(t => t.scheduledDate === dateStr);
   const getProjectsInUse = () => {
@@ -132,7 +206,46 @@ export default function Calendar() {
   };
 
   const toggleTaskComplete = (taskId: string) => {
-    setTasks(prev => prev.map(t => t.id === taskId ? { ...t, completed: !t.completed } : t));
+    setTasks(prev => {
+      const targetIndex = prev.findIndex(t => t.id === taskId);
+      if (targetIndex === -1) return prev;
+
+      const task = prev[targetIndex];
+      const isNowCompleted = !task.completed;
+      const updated = [...prev];
+      updated[targetIndex] = { ...task, completed: isNowCompleted };
+
+      if (isNowCompleted && task.repeatEnabled) {
+        const nextDate = getNextRecurringDate(task);
+
+        if (nextDate) {
+          const duplicateExists = prev.some(t =>
+            t.id !== task.id &&
+            t.title === task.title &&
+            (t.project || 'personal') === (task.project || 'personal') &&
+            t.scheduledDate === nextDate &&
+            t.repeatEnabled &&
+            t.repeatType === task.repeatType
+          );
+
+          if (!duplicateExists) {
+            updated.push({
+              ...task,
+              id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+              completed: false,
+              actPomos: 0,
+              startTime: undefined,
+              endTime: undefined,
+              scheduledDate: nextDate,
+              reminderSent: false,
+              repeatDays: task.repeatDays ? [...task.repeatDays] : [],
+            });
+          }
+        }
+      }
+
+      return updated;
+    });
   };
 
   const deleteTask = (taskId: string) => {
@@ -148,6 +261,9 @@ export default function Calendar() {
     setEditScheduledTime(task.scheduledTime || '');
     setEditProject(task.project || 'personal');
     setEditPriority(task.priority || 'medium');
+    setEditRepeatEnabled(Boolean(task.repeatEnabled));
+    setEditRepeatType(task.repeatType || 'none');
+    setEditRepeatDays(task.repeatDays || []);
   };
 
   const saveEditedTask = () => {
@@ -162,6 +278,9 @@ export default function Calendar() {
             scheduledTime: editScheduledTime,
             project: editProject,
             priority: editPriority,
+            repeatEnabled: editRepeatEnabled,
+            repeatType: editRepeatEnabled ? editRepeatType : 'none',
+            repeatDays: editRepeatEnabled && editRepeatType === 'specific' ? editRepeatDays : [],
             reminderSent: false,
           }
         : t
@@ -182,9 +301,15 @@ export default function Calendar() {
       scheduledTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }),
       project: newTaskProject,
       priority: 'medium',
+      repeatEnabled: newRepeatEnabled,
+      repeatType: newRepeatEnabled ? newRepeatType : 'none',
+      repeatDays: newRepeatEnabled && newRepeatType === 'specific' ? newRepeatDays : [],
     };
     setTasks(prev => [...prev, newTask]);
     setNewTaskTitle('');
+    setNewRepeatEnabled(false);
+    setNewRepeatType('none');
+    setNewRepeatDays([]);
     setShowAddTask(false);
   };
 
@@ -428,6 +553,63 @@ export default function Calendar() {
                           onChange={e => setEditEstPomos(Math.max(1, parseInt(e.target.value) || 1))}
                           className="w-full px-3 py-2 border border-[var(--border)] rounded-lg text-sm bg-[var(--surface)] text-[var(--foreground)] focus:outline-none focus:border-blue-500"
                         />
+                        <div className="rounded-lg border border-[var(--border)] p-3 space-y-2 bg-[var(--surface)]">
+                          <label className="flex items-center gap-2 text-sm text-[var(--foreground)]">
+                            <input
+                              type="checkbox"
+                              checked={editRepeatEnabled}
+                              onChange={e => {
+                                setEditRepeatEnabled(e.target.checked);
+                                if (e.target.checked && editRepeatType === 'none') {
+                                  setEditRepeatType('daily');
+                                }
+                              }}
+                            />
+                            Repeat task
+                          </label>
+
+                          {editRepeatEnabled && (
+                            <>
+                              <select
+                                value={editRepeatType}
+                                onChange={e => setEditRepeatType(e.target.value as RepeatType)}
+                                className="w-full px-3 py-2 border border-[var(--border)] rounded-lg text-sm bg-[var(--surface)] text-[var(--foreground)] focus:outline-none focus:border-blue-500"
+                              >
+                                <option value="daily">Daily</option>
+                                <option value="weekly">Weekly</option>
+                                <option value="specific">Specific days</option>
+                              </select>
+
+                              {editRepeatType === 'specific' && (
+                                <div className="flex flex-wrap gap-1">
+                                  {WEEKDAY_OPTIONS.map(day => {
+                                    const selected = editRepeatDays.includes(day.value);
+                                    return (
+                                      <button
+                                        key={day.value}
+                                        type="button"
+                                        onClick={() => {
+                                          setEditRepeatDays(prev =>
+                                            prev.includes(day.value)
+                                              ? prev.filter(d => d !== day.value)
+                                              : [...prev, day.value].sort((a, b) => a - b)
+                                          );
+                                        }}
+                                        className={`px-2 py-1 rounded text-xs border transition ${
+                                          selected
+                                            ? 'bg-[var(--foreground)] text-[var(--surface)] border-[var(--foreground)]'
+                                            : 'bg-[var(--surface-secondary)] text-[var(--foreground)] border-[var(--border)]'
+                                        }`}
+                                      >
+                                        {day.label}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </>
+                          )}
+                        </div>
                         <div className="flex gap-2">
                           <button
                             onClick={() => saveEditedTask()}
@@ -477,6 +659,11 @@ export default function Calendar() {
                               {task.scheduledTime && (
                                 <span className="text-xs px-2 py-1 rounded bg-[var(--surface-secondary)] text-[var(--foreground)] flex items-center gap-1">
                                   <Clock size={12} /> {task.scheduledTime}
+                                </span>
+                              )}
+                              {getRepeatLabel(task) && (
+                                <span className="text-xs px-2 py-1 rounded bg-blue-500 bg-opacity-15 text-blue-700 dark:text-blue-300">
+                                  {getRepeatLabel(task)}
                                 </span>
                               )}
                             </div>
@@ -535,6 +722,63 @@ export default function Calendar() {
                       <option key={key} value={key}>{p.name}</option>
                     ))}
                   </select>
+                  <div className="rounded-lg border border-[var(--accent)] p-3 bg-[var(--surface)] space-y-2">
+                    <label className="flex items-center gap-2 text-sm text-[var(--foreground)]">
+                      <input
+                        type="checkbox"
+                        checked={newRepeatEnabled}
+                        onChange={e => {
+                          setNewRepeatEnabled(e.target.checked);
+                          if (e.target.checked && newRepeatType === 'none') {
+                            setNewRepeatType('daily');
+                          }
+                        }}
+                      />
+                      Repeat
+                    </label>
+
+                    {newRepeatEnabled && (
+                      <>
+                        <select
+                          value={newRepeatType}
+                          onChange={e => setNewRepeatType(e.target.value as RepeatType)}
+                          className="w-full px-3 py-2 border border-[var(--border)] rounded-lg text-sm bg-[var(--surface)] text-[var(--foreground)] focus:outline-none"
+                        >
+                          <option value="daily">Daily</option>
+                          <option value="weekly">Weekly</option>
+                          <option value="specific">Specific days</option>
+                        </select>
+
+                        {newRepeatType === 'specific' && (
+                          <div className="flex flex-wrap gap-1">
+                            {WEEKDAY_OPTIONS.map(day => {
+                              const selected = newRepeatDays.includes(day.value);
+                              return (
+                                <button
+                                  key={day.value}
+                                  type="button"
+                                  onClick={() => {
+                                    setNewRepeatDays(prev =>
+                                      prev.includes(day.value)
+                                        ? prev.filter(d => d !== day.value)
+                                        : [...prev, day.value].sort((a, b) => a - b)
+                                    );
+                                  }}
+                                  className={`px-2 py-1 rounded text-xs border transition ${
+                                    selected
+                                      ? 'bg-[var(--foreground)] text-[var(--surface)] border-[var(--foreground)]'
+                                      : 'bg-[var(--surface-secondary)] text-[var(--foreground)] border-[var(--border)]'
+                                  }`}
+                                >
+                                  {day.label}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
                   <div className="flex gap-2">
                     <button
                       onClick={addNewTask}
@@ -546,6 +790,9 @@ export default function Calendar() {
                       onClick={() => {
                         setShowAddTask(false);
                         setNewTaskTitle('');
+                        setNewRepeatEnabled(false);
+                        setNewRepeatType('none');
+                        setNewRepeatDays([]);
                       }}
                       className="flex-1 bg-[var(--surface-secondary)] text-[var(--foreground)] py-2 rounded-lg text-sm font-medium hover:bg-[var(--border)] transition"
                     >
