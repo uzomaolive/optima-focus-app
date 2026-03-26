@@ -1,8 +1,23 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { ChevronLeft, ChevronRight, CheckCircle, Circle, Trash2, Plus, X, Calendar as CalendarIcon, Clock, Flag } from 'lucide-react';
+import { ChevronLeft, ChevronRight, CheckCircle, Circle, Trash2, Plus, X, Calendar as CalendarIcon, Clock, Flag, Copy, Layout } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+
+type RepeatType = 'none' | 'daily' | 'weekly' | 'specific';
+
+interface TemplateTask {
+  title: string;
+  estPomos: number;
+  project: string;
+  priority: 'low' | 'medium' | 'high';
+}
+
+interface TaskTemplate {
+  id: string;
+  name: string;
+  tasks: TemplateTask[];
+}
 
 interface Task {
   id: string;
@@ -17,6 +32,9 @@ interface Task {
   reminderSent?: boolean;
   project?: string;
   priority?: 'low' | 'medium' | 'high';
+  repeatEnabled?: boolean;
+  repeatType?: RepeatType;
+  repeatDays?: number[];
 }
 
 interface ProjectMetadata {
@@ -32,6 +50,16 @@ const PRESET_PROJECTS: Record<string, ProjectMetadata> = {
   'errands': { name: 'Errands', color: '#f59e0b' },
 };
 
+const WEEKDAY_OPTIONS = [
+  { label: 'Sun', value: 0 },
+  { label: 'Mon', value: 1 },
+  { label: 'Tue', value: 2 },
+  { label: 'Wed', value: 3 },
+  { label: 'Thu', value: 4 },
+  { label: 'Fri', value: 5 },
+  { label: 'Sat', value: 6 },
+];
+
 const initializeTasks = (): Task[] => {
   if (typeof window === 'undefined') return [];
   try {
@@ -43,8 +71,35 @@ const initializeTasks = (): Task[] => {
   }
 };
 
+const initializeProjectGoals = (): Record<string, number> => {
+  if (typeof window === 'undefined') return {};
+  try {
+    const saved = localStorage.getItem('optima-project-goals');
+    return saved ? JSON.parse(saved) : {};
+  } catch (e) {
+    console.error('Failed to load project goals:', e);
+    return {};
+  }
+};
+
+const initializeTemplates = (): TaskTemplate[] => {
+  if (typeof window === 'undefined') return [];
+  try {
+    const saved = localStorage.getItem('optima-task-templates');
+    return saved ? JSON.parse(saved) : [];
+  } catch (e) {
+    console.error('Failed to load templates:', e);
+    return [];
+  }
+};
+
 export default function Calendar() {
   const [tasks, setTasks] = useState<Task[]>(() => initializeTasks());
+  const [templates, setTemplates] = useState<TaskTemplate[]>(() => initializeTemplates());
+  const [isSavingTemplate, setIsSavingTemplate] = useState(false);
+  const [newTemplateName, setNewTemplateName] = useState('');
+  const [projectGoals, setProjectGoals] = useState<Record<string, number>>(() => initializeProjectGoals());
+  const [goalInputs, setGoalInputs] = useState<Record<string, string>>({});
   const [currentDate, setCurrentDate] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
@@ -54,9 +109,15 @@ export default function Calendar() {
   const [editScheduledTime, setEditScheduledTime] = useState('');
   const [editProject, setEditProject] = useState('personal');
   const [editPriority, setEditPriority] = useState<'low' | 'medium' | 'high'>('medium');
+  const [editRepeatEnabled, setEditRepeatEnabled] = useState(false);
+  const [editRepeatType, setEditRepeatType] = useState<RepeatType>('none');
+  const [editRepeatDays, setEditRepeatDays] = useState<number[]>([]);
   const [showAddTask, setShowAddTask] = useState(false);
   const [newTaskTitle, setNewTaskTitle] = useState('');
   const [newTaskProject, setNewTaskProject] = useState('personal');
+  const [newRepeatEnabled, setNewRepeatEnabled] = useState(false);
+  const [newRepeatType, setNewRepeatType] = useState<RepeatType>('none');
+  const [newRepeatDays, setNewRepeatDays] = useState<number[]>([]);
 
   // Set selected date to today
   useEffect(() => {
@@ -72,10 +133,79 @@ export default function Calendar() {
     }
   }, [tasks]);
 
+  useEffect(() => {
+    try {
+      localStorage.setItem('optima-project-goals', JSON.stringify(projectGoals));
+    } catch (e) {
+      console.error('Failed to save project goals:', e);
+    }
+  }, [projectGoals]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('optima-task-templates', JSON.stringify(templates));
+    } catch (e) {
+      console.error('Failed to save templates:', e);
+    }
+  }, [templates]);
+
   const getDaysInMonth = (date: Date) => new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
   const getFirstDayOfMonth = (date: Date) => new Date(date.getFullYear(), date.getMonth(), 1).getDay();
   const formatDate = (date: Date) => date.toISOString().split('T')[0];
   const today = formatDate(new Date());
+
+  const addDays = (dateString: string, days: number) => {
+    const date = new Date(`${dateString}T00:00:00`);
+    date.setDate(date.getDate() + days);
+    return formatDate(date);
+  };
+
+  const getNextSpecificDayDate = (dateString: string, repeatDays: number[]) => {
+    if (repeatDays.length === 0) return null;
+    const date = new Date(`${dateString}T00:00:00`);
+    for (let i = 1; i <= 7; i++) {
+      const candidate = new Date(date);
+      candidate.setDate(date.getDate() + i);
+      if (repeatDays.includes(candidate.getDay())) {
+        return formatDate(candidate);
+      }
+    }
+    return null;
+  };
+
+  const getNextRecurringDate = (task: Task) => {
+    if (!task.repeatEnabled || !task.repeatType || task.repeatType === 'none') return null;
+
+    const baseDate = task.scheduledDate || today;
+
+    if (task.repeatType === 'daily') {
+      return addDays(baseDate, 1);
+    }
+
+    if (task.repeatType === 'weekly') {
+      return addDays(baseDate, 7);
+    }
+
+    if (task.repeatType === 'specific') {
+      return getNextSpecificDayDate(baseDate, task.repeatDays || []);
+    }
+
+    return null;
+  };
+
+  const getRepeatLabel = (task: Task) => {
+    if (!task.repeatEnabled || !task.repeatType || task.repeatType === 'none') return null;
+    if (task.repeatType === 'daily') return 'Repeats daily';
+    if (task.repeatType === 'weekly') return 'Repeats weekly';
+    if (task.repeatType === 'specific') {
+      const labels = WEEKDAY_OPTIONS
+        .filter(day => (task.repeatDays || []).includes(day.value))
+        .map(day => day.label)
+        .join(', ');
+      return labels ? `Repeats: ${labels}` : 'Repeats on specific days';
+    }
+    return null;
+  };
 
   const getTasksForDate = (dateStr: string) => tasks.filter(t => t.scheduledDate === dateStr);
   const getProjectsInUse = () => {
@@ -83,8 +213,117 @@ export default function Calendar() {
     return Array.from(projects);
   };
 
+  const getProjectCompletedPomos = (projectKey: string) => {
+    return tasks
+      .filter(t => (t.project || 'personal') === projectKey && t.completed)
+      .reduce((total, task) => total + (task.actPomos > 0 ? task.actPomos : task.estPomos), 0);
+  };
+
+  const setProjectGoal = (projectKey: string) => {
+    const rawValue = (goalInputs[projectKey] ?? '').trim();
+    const parsed = parseInt(rawValue, 10);
+
+    if (Number.isNaN(parsed) || parsed <= 0) {
+      setProjectGoals(prev => {
+        const next = { ...prev };
+        delete next[projectKey];
+        return next;
+      });
+      setGoalInputs(prev => {
+        const next = { ...prev };
+        delete next[projectKey];
+        return next;
+      });
+      return;
+    }
+
+    setProjectGoals(prev => ({ ...prev, [projectKey]: parsed }));
+  };
+
+  const saveAsTemplate = () => {
+    if (!newTemplateName.trim() || !selectedDate) return;
+    const dateTasks = getTasksForDate(selectedDate);
+    if (dateTasks.length === 0) return;
+
+    const newTemplate: TaskTemplate = {
+      id: Date.now().toString(),
+      name: newTemplateName,
+      tasks: dateTasks.map(t => ({
+        title: t.title,
+        estPomos: t.estPomos,
+        project: t.project || 'personal',
+        priority: t.priority || 'medium',
+      })),
+    };
+
+    setTemplates(prev => [...prev, newTemplate]);
+    setNewTemplateName('');
+    setIsSavingTemplate(false);
+  };
+
+  const applyTemplate = (template: TaskTemplate) => {
+    if (!selectedDate) return;
+    
+    const newTasks: Task[] = template.tasks.map((t, idx) => ({
+      id: `${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 5)}`,
+      title: t.title,
+      estPomos: t.estPomos,
+      actPomos: 0,
+      completed: false,
+      scheduledDate: selectedDate,
+      scheduledTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }),
+      project: t.project,
+      priority: t.priority,
+    }));
+
+    setTasks(prev => [...prev, ...newTasks]);
+  };
+
+  const deleteTemplate = (id: string) => {
+    setTemplates(prev => prev.filter(t => t.id !== id));
+  };
+
   const toggleTaskComplete = (taskId: string) => {
-    setTasks(prev => prev.map(t => t.id === taskId ? { ...t, completed: !t.completed } : t));
+    setTasks(prev => {
+      const targetIndex = prev.findIndex(t => t.id === taskId);
+      if (targetIndex === -1) return prev;
+
+      const task = prev[targetIndex];
+      const isNowCompleted = !task.completed;
+      const updated = [...prev];
+      updated[targetIndex] = { ...task, completed: isNowCompleted };
+
+      if (isNowCompleted && task.repeatEnabled) {
+        const nextDate = getNextRecurringDate(task);
+
+        if (nextDate) {
+          const duplicateExists = prev.some(t =>
+            t.id !== task.id &&
+            t.title === task.title &&
+            (t.project || 'personal') === (task.project || 'personal') &&
+            t.scheduledDate === nextDate &&
+            t.repeatEnabled &&
+            t.repeatType === task.repeatType
+          );
+
+          if (!duplicateExists) {
+            updated.push({
+              ...task,
+              id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+              completed: false,
+              actPomos: 0,
+              startTime: undefined,
+              endTime: undefined,
+              scheduledDate: nextDate,
+              reminderSent: false,
+              repeatDays: task.repeatDays ? [...task.repeatDays] : [],
+            });
+          }
+        }
+      }
+
+      return updated;
+    });
   };
 
   const deleteTask = (taskId: string) => {
@@ -100,6 +339,9 @@ export default function Calendar() {
     setEditScheduledTime(task.scheduledTime || '');
     setEditProject(task.project || 'personal');
     setEditPriority(task.priority || 'medium');
+    setEditRepeatEnabled(Boolean(task.repeatEnabled));
+    setEditRepeatType(task.repeatType || 'none');
+    setEditRepeatDays(task.repeatDays || []);
   };
 
   const saveEditedTask = () => {
@@ -114,6 +356,9 @@ export default function Calendar() {
             scheduledTime: editScheduledTime,
             project: editProject,
             priority: editPriority,
+            repeatEnabled: editRepeatEnabled,
+            repeatType: editRepeatEnabled ? editRepeatType : 'none',
+            repeatDays: editRepeatEnabled && editRepeatType === 'specific' ? editRepeatDays : [],
             reminderSent: false,
           }
         : t
@@ -134,9 +379,15 @@ export default function Calendar() {
       scheduledTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }),
       project: newTaskProject,
       priority: 'medium',
+      repeatEnabled: newRepeatEnabled,
+      repeatType: newRepeatEnabled ? newRepeatType : 'none',
+      repeatDays: newRepeatEnabled && newRepeatType === 'specific' ? newRepeatDays : [],
     };
     setTasks(prev => [...prev, newTask]);
     setNewTaskTitle('');
+    setNewRepeatEnabled(false);
+    setNewRepeatType('none');
+    setNewRepeatDays([]);
     setShowAddTask(false);
   };
 
@@ -222,17 +473,83 @@ export default function Calendar() {
         <div className="p-6 border-b border-[var(--border)]">
           <h2 className="text-lg font-bold text-[var(--foreground)]">Projects</h2>
         </div>
-        <div className="flex-1 overflow-y-auto p-4 space-y-1">
+        <div className="flex-[2] overflow-y-auto p-4 space-y-3">
           {Object.entries(PRESET_PROJECTS).map(([key, project]) => {
             const count = tasks.filter(t => (t.project || 'personal') === key && !t.completed).length;
+            const goal = projectGoals[key] || 0;
+            const completedPomos = getProjectCompletedPomos(key);
+            const progress = goal > 0 ? Math.min(100, (completedPomos / goal) * 100) : 0;
             return (
-              <div key={key} className="flex items-center gap-3 px-4 py-2 rounded hover:bg-[var(--surface-secondary)] dark:hover:bg-[var(--surface-secondary)] cursor-pointer transition">
-                <div className="w-3 h-3 rounded-full" style={{ backgroundColor: project.color }} />
-                <span className="flex-1 text-sm text-[var(--foreground)]">{project.name}</span>
-                <span className="text-xs text-[var(--foreground)] opacity-70">{count}</span>
+              <div key={key} className="px-3 py-3 rounded-lg bg-[var(--surface-secondary)] border border-[var(--border)]">
+                <div className="flex items-center gap-3">
+                  <div className="w-3 h-3 rounded-full" style={{ backgroundColor: project.color }} />
+                  <span className="flex-1 text-sm text-[var(--foreground)]">{project.name}</span>
+                  <span className="text-xs text-[var(--foreground)] opacity-70">{count}</span>
+                </div>
+
+                <div className="mt-2">
+                  <div className="w-full h-2 rounded-full bg-[var(--border)] overflow-hidden">
+                    <div
+                      className="h-full rounded-full transition-all duration-300"
+                      style={{ width: `${progress}%`, backgroundColor: project.color }}
+                    />
+                  </div>
+                  <div className="mt-1 flex items-center justify-between text-xs text-[var(--foreground)] opacity-70">
+                    <span>{goal > 0 ? `${completedPomos}/${goal} pomos` : 'No goal set'}</span>
+                    {goal > 0 && <span>{Math.round(progress)}%</span>}
+                  </div>
+                </div>
+
+                <div className="mt-2 flex items-center gap-2">
+                  <input
+                    type="number"
+                    min="1"
+                    placeholder="Goal"
+                    value={goalInputs[key] ?? (goal > 0 ? String(goal) : '')}
+                    onChange={e => setGoalInputs(prev => ({ ...prev, [key]: e.target.value }))}
+                    onKeyDown={e => e.key === 'Enter' && setProjectGoal(key)}
+                    className="w-full px-2 py-1 text-xs border border-[var(--border)] rounded bg-[var(--surface)] text-[var(--foreground)] focus:outline-none focus:border-[var(--accent)]"
+                  />
+                  <button
+                    onClick={() => setProjectGoal(key)}
+                    className="px-2 py-1 text-xs rounded bg-[var(--foreground)] text-[var(--surface)] hover:opacity-90 transition"
+                  >
+                    Set
+                  </button>
+                </div>
               </div>
             );
           })}
+        </div>
+
+        <div className="p-6 border-t border-b border-[var(--border)]">
+          <h2 className="text-lg font-bold text-[var(--foreground)] flex items-center gap-2">
+            <Layout size={20} /> Templates
+          </h2>
+        </div>
+        <div className="flex-1 overflow-y-auto p-4 space-y-2">
+          {templates.length === 0 && (
+            <p className="text-xs text-[var(--foreground)] opacity-50 px-4">No templates yet</p>
+          )}
+          {templates.map(template => (
+            <div key={template.id} className="group relative">
+              <button
+                onClick={() => applyTemplate(template)}
+                className="w-full flex items-center gap-3 px-4 py-2 rounded-lg bg-[var(--surface-secondary)] border border-[var(--border)] hover:border-[var(--accent)] transition text-left"
+              >
+                <div className="flex-1">
+                  <div className="text-sm font-bold text-[var(--foreground)]">{template.name}</div>
+                  <div className="text-[10px] text-[var(--foreground)] opacity-60">{template.tasks.length} tasks</div>
+                </div>
+              </button>
+              <button
+                onClick={(e) => { e.stopPropagation(); deleteTemplate(template.id); }}
+                className="absolute top-1 right-1 p-1 text-[var(--foreground)] opacity-0 group-hover:opacity-40 hover:!opacity-100 transition"
+              >
+                <Trash2 size={12} />
+              </button>
+            </div>
+          ))}
         </div>
       </div>
 
@@ -274,11 +591,58 @@ export default function Calendar() {
 
           {/* Right Sidebar - Task Details */}
           <div className="w-96 bg-[var(--surface)] border-l border-[var(--border)] flex flex-col transition-colors duration-300">
-            <div className="border-b border-[var(--border)] p-6">
+            <div className="border-b border-[var(--border)] p-6 flex items-center justify-between">
               <h3 className="text-lg font-bold text-[var(--foreground)]">
                 {selectedDate && new Date(selectedDate).toLocaleDateString('default', { weekday: 'long', month: 'long', day: 'numeric' })}
               </h3>
+              {selectedDateTasks.length > 0 && (
+                <button 
+                  onClick={() => setIsSavingTemplate(true)}
+                  className="p-2 rounded-lg hover:bg-[var(--surface-secondary)] text-[var(--foreground)] transition"
+                  title="Save day as template"
+                >
+                  <Copy size={20} />
+                </button>
+              )}
             </div>
+
+            <AnimatePresence>
+              {isSavingTemplate && (
+                <motion.div 
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: 'auto', opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  className="px-6 py-4 border-b border-[var(--border)] bg-[var(--surface-secondary)] overflow-hidden"
+                >
+                  <div className="flex flex-col gap-2">
+                    <label className="text-xs font-bold uppercase text-[var(--foreground)] opacity-70">Template Name</label>
+                    <div className="flex gap-2">
+                      <input
+                        autoFocus
+                        type="text"
+                        value={newTemplateName}
+                        onChange={e => setNewTemplateName(e.target.value)}
+                        onKeyDown={e => e.key === 'Enter' && saveAsTemplate()}
+                        placeholder="e.g. Morning Routine"
+                        className="flex-1 px-3 py-2 border border-[var(--border)] rounded-lg text-sm bg-[var(--surface)] text-[var(--foreground)] focus:outline-none focus:border-[var(--accent)]"
+                      />
+                      <button
+                        onClick={saveAsTemplate}
+                        className="px-4 py-2 bg-[var(--foreground)] text-[var(--surface)] rounded-lg text-sm font-bold"
+                      >
+                        Save
+                      </button>
+                      <button
+                        onClick={() => setIsSavingTemplate(false)}
+                        className="p-2 text-[var(--foreground)] opacity-70 hover:opacity-100"
+                      >
+                        <X size={20} />
+                      </button>
+                    </div>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
 
             <div className="flex-1 overflow-y-auto p-6 space-y-3">
               <AnimatePresence>
@@ -344,6 +708,63 @@ export default function Calendar() {
                           onChange={e => setEditEstPomos(Math.max(1, parseInt(e.target.value) || 1))}
                           className="w-full px-3 py-2 border border-[var(--border)] rounded-lg text-sm bg-[var(--surface)] text-[var(--foreground)] focus:outline-none focus:border-blue-500"
                         />
+                        <div className="rounded-lg border border-[var(--border)] p-3 space-y-2 bg-[var(--surface)]">
+                          <label className="flex items-center gap-2 text-sm text-[var(--foreground)]">
+                            <input
+                              type="checkbox"
+                              checked={editRepeatEnabled}
+                              onChange={e => {
+                                setEditRepeatEnabled(e.target.checked);
+                                if (e.target.checked && editRepeatType === 'none') {
+                                  setEditRepeatType('daily');
+                                }
+                              }}
+                            />
+                            Repeat task
+                          </label>
+
+                          {editRepeatEnabled && (
+                            <>
+                              <select
+                                value={editRepeatType}
+                                onChange={e => setEditRepeatType(e.target.value as RepeatType)}
+                                className="w-full px-3 py-2 border border-[var(--border)] rounded-lg text-sm bg-[var(--surface)] text-[var(--foreground)] focus:outline-none focus:border-blue-500"
+                              >
+                                <option value="daily">Daily</option>
+                                <option value="weekly">Weekly</option>
+                                <option value="specific">Specific days</option>
+                              </select>
+
+                              {editRepeatType === 'specific' && (
+                                <div className="flex flex-wrap gap-1">
+                                  {WEEKDAY_OPTIONS.map(day => {
+                                    const selected = editRepeatDays.includes(day.value);
+                                    return (
+                                      <button
+                                        key={day.value}
+                                        type="button"
+                                        onClick={() => {
+                                          setEditRepeatDays(prev =>
+                                            prev.includes(day.value)
+                                              ? prev.filter(d => d !== day.value)
+                                              : [...prev, day.value].sort((a, b) => a - b)
+                                          );
+                                        }}
+                                        className={`px-2 py-1 rounded text-xs border transition ${
+                                          selected
+                                            ? 'bg-[var(--foreground)] text-[var(--surface)] border-[var(--foreground)]'
+                                            : 'bg-[var(--surface-secondary)] text-[var(--foreground)] border-[var(--border)]'
+                                        }`}
+                                      >
+                                        {day.label}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </>
+                          )}
+                        </div>
                         <div className="flex gap-2">
                           <button
                             onClick={() => saveEditedTask()}
@@ -393,6 +814,11 @@ export default function Calendar() {
                               {task.scheduledTime && (
                                 <span className="text-xs px-2 py-1 rounded bg-[var(--surface-secondary)] text-[var(--foreground)] flex items-center gap-1">
                                   <Clock size={12} /> {task.scheduledTime}
+                                </span>
+                              )}
+                              {getRepeatLabel(task) && (
+                                <span className="text-xs px-2 py-1 rounded bg-blue-500 bg-opacity-15 text-blue-700 dark:text-blue-300">
+                                  {getRepeatLabel(task)}
                                 </span>
                               )}
                             </div>
@@ -451,6 +877,63 @@ export default function Calendar() {
                       <option key={key} value={key}>{p.name}</option>
                     ))}
                   </select>
+                  <div className="rounded-lg border border-[var(--accent)] p-3 bg-[var(--surface)] space-y-2">
+                    <label className="flex items-center gap-2 text-sm text-[var(--foreground)]">
+                      <input
+                        type="checkbox"
+                        checked={newRepeatEnabled}
+                        onChange={e => {
+                          setNewRepeatEnabled(e.target.checked);
+                          if (e.target.checked && newRepeatType === 'none') {
+                            setNewRepeatType('daily');
+                          }
+                        }}
+                      />
+                      Repeat
+                    </label>
+
+                    {newRepeatEnabled && (
+                      <>
+                        <select
+                          value={newRepeatType}
+                          onChange={e => setNewRepeatType(e.target.value as RepeatType)}
+                          className="w-full px-3 py-2 border border-[var(--border)] rounded-lg text-sm bg-[var(--surface)] text-[var(--foreground)] focus:outline-none"
+                        >
+                          <option value="daily">Daily</option>
+                          <option value="weekly">Weekly</option>
+                          <option value="specific">Specific days</option>
+                        </select>
+
+                        {newRepeatType === 'specific' && (
+                          <div className="flex flex-wrap gap-1">
+                            {WEEKDAY_OPTIONS.map(day => {
+                              const selected = newRepeatDays.includes(day.value);
+                              return (
+                                <button
+                                  key={day.value}
+                                  type="button"
+                                  onClick={() => {
+                                    setNewRepeatDays(prev =>
+                                      prev.includes(day.value)
+                                        ? prev.filter(d => d !== day.value)
+                                        : [...prev, day.value].sort((a, b) => a - b)
+                                    );
+                                  }}
+                                  className={`px-2 py-1 rounded text-xs border transition ${
+                                    selected
+                                      ? 'bg-[var(--foreground)] text-[var(--surface)] border-[var(--foreground)]'
+                                      : 'bg-[var(--surface-secondary)] text-[var(--foreground)] border-[var(--border)]'
+                                  }`}
+                                >
+                                  {day.label}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
                   <div className="flex gap-2">
                     <button
                       onClick={addNewTask}
@@ -462,6 +945,9 @@ export default function Calendar() {
                       onClick={() => {
                         setShowAddTask(false);
                         setNewTaskTitle('');
+                        setNewRepeatEnabled(false);
+                        setNewRepeatType('none');
+                        setNewRepeatDays([]);
                       }}
                       className="flex-1 bg-[var(--surface-secondary)] text-[var(--foreground)] py-2 rounded-lg text-sm font-medium hover:bg-[var(--border)] transition"
                     >
